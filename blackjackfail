@@ -1,0 +1,75 @@
+from random import choice
+from art import logo
+
+
+def drawing (hand,times):
+    for i in range(0,times):
+        hand.append(choice(cards))
+    return hand
+
+def startinghand(hand):
+    drawing(hand,2)
+    return hand
+
+def calculatingscore(hand):
+    score=sum(hand)
+    if score==21:
+        score=0
+    elif score>21 and 11 in hand:
+        hand.remove(11)
+        hand.append(1)
+    elif score>21:
+        score*=(-1)
+    return score
+
+
+
+"""starting deck and everyone has empty hands"""
+cards = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
+
+gameplay=input("Do you want to play a game of Blackjack? Type y or n")
+
+"""main game loop"""
+while gameplay =="y":
+    print(logo)
+    decision = "y"
+    dealer = []
+    player = []
+    player = startinghand(hand=player)
+    dealer = startinghand(hand=dealer)
+
+    while decision=="y":
+        score_p = calculatingscore(player)
+        score_d = calculatingscore(dealer)
+        print(f"your cards {player},current score: {score_p}")
+        print(f"Computers first card: {dealer[0]}")
+
+
+        if score_p==0 or score_d ==0:
+            print("The player with the blackjack wins")
+            break
+
+
+        decision=input("Do you want more cards?")
+        drawing(player,1)
+        if score_p <0:
+            decision="n"
+            print("You lost")
+            print(f"dealer with {dealer} and a score of{score_d}")
+            break
+        while score_d<17:
+            drawing(dealer,1)
+            score_d = calculatingscore(dealer)
+        if score_d <0:
+            print("dealer with "+ dealer+ " and a score of" + score_d)
+            print("the player has won")
+    if score_d==score_p:
+        ("dealer with " + dealer + " and a score of" + score_d)
+        print("draw")
+    if score_p>score_d:
+        ("dealer with " + dealer + " and a score of" + score_d)
+        print("player won")
+    if score_d>score_p:
+        ("dealer with " + dealer + " and a score of" + score_d)
+        print("dealer won")
+    gameplay=input("willste noch weiterspielen?")
