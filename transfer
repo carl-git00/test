@@ -11,9 +11,9 @@ load_dotenv(find_dotenv())
 
 path = os.getcwd()
 path = os.path.dirname(path)
-path_result_file = os.path.join(path, 'results', '2025-08-20_PV_2022_LK_v01.xlsx')
+path_result_file = os.path.join(path, 'results', '2025-08-20_Wind_2022_LK_v01.xlsx')
 
-
+# Database Connection
 dbname = 'geodb'
 db_user = os.environ.get('db_username')
 #db_password = os.environ.get('db_password')
@@ -24,64 +24,111 @@ GEODB_engine = db.create_engine(f"postgresql://{db_user}:{os.environ.get('db_pas
 
 # Get Data from Marktstammdaten (Stand 07_2024)
 sql = text("""
-    SELECT "Inbetriebnahmedatum","DatumEndgueltigeStilllegung","Gemeindeschluessel", "Bruttoleistung", 
-        "Nettonennleistung", "Einspeisungsart", "Hauptausrichtung", ST_AsText(geometry) AS geom
-    FROM "mstr_07_2024"."einheitensolar"   
+    SELECT "Inbetriebnahmedatum","DatumEndgueltigeStilllegung", "Land", "Bundesland","Gemeinde", "Gemeindeschluessel", 
+    "Laengengrad", "Breitengrad", "Bruttoleistung", "Nettonennleistung", "Einspeisungsart", "Lage", "Hersteller",
+    "Technologie", "Typenbezeichnung", "Nabenhoehe", "Rotordurchmesser", "Seelage", "Postleitzahl", 
+    ST_AsText(geometry) AS geom
+    FROM "mstr_07_2024"."einheitenwind"   
 """)
 
-df_pv_mstr = pd.read_sql(sql, GEODB_engine)
+df_wind_mstr = pd.read_sql(sql, GEODB_engine)
 
+# get nuts geometries
 sql_nuts = """SELECT "id", "ags", "gen", "bez", "nuts", geom FROM "proj_regioplan"."vg250_krs_2024" WHERE "gf" = 4 """
 gdf_nuts = gpd.read_postgis(sql_nuts, GEODB_engine, geom_col="geom")
 
+# get catalogue values
+sql_catalogue = text("""SELECT * FROM "mstr_07_2024"."katalogwerte" """)
+catalogue_values = pd.read_sql(sql_catalogue, GEODB_engine)
+catalogue_values = dict(zip(catalogue_values["Id"], catalogue_values["Wert"]))
 
-# conn = psycopg2.connect(dbname="geodb", user=username, password=pw, host="gwi-geodb-02", port=5432)
-# cursor = conn.cursor()
-# cursor.execute(f'SELECT "Inbetriebnahmedatum", "Bruttoleistung", "Nettonennleistung", "Einspeisungsart", "Hauptausrichtung", ST_AsText(geometry) AS geom FROM "mstr_07_2024"."einheitensolar" WHERE "Gemeinde" = \'Hattingen\'')
-# data = cursor.fetchall()
-# column_names = [desc[0] for desc in cursor.description]
-# cursor.close()
-# conn.close()
-# df_mstr = pd.DataFrame(data, columns=column_names)
-# df_mstr['Bruttoertrag'] = df_mstr['Bruttoleistung'] * slope.round(2)
+cols_to_transform = [
+        "Land",
+        "Bundesland",
+        "Einspeisungsart",
+        "Lage",
+        "Hersteller",
+        "Technologie",
+        "Seelage"
+    ]
+for replace_col in cols_to_transform:
+    df_wind_mstr[replace_col] = df_wind_mstr[replace_col].replace(catalogue_values)
 
-df_pv_mstr["Inbetriebnahmedatum"] = pd.to_datetime(df_pv_mstr["Inbetriebnahmedatum"], errors ="coerce")
-df_pv_mstr["DatumEndgueltigeStilllegung"] = pd.to_datetime(df_pv_mstr["DatumEndgueltigeStilllegung"], errors="coerce")
+df_wind_mstr["DatumEndgueltigeStilllegung"] = pd.to_datetime(df_wind_mstr["DatumEndgueltigeStilllegung"], errors ="coerce")
+df_wind_mstr["Inbetriebnahmedatum"] = pd.to_datetime(df_wind_mstr["Inbetriebnahmedatum"], errors ="coerce")
 
 max_ibn_date = "2022-12-31"
 max_shutdown_date = "2022-01-01"
-df_pv_2022 = df_pv_mstr[(df_pv_mstr["Inbetriebnahmedatum"] <= max_ibn_date) &
-                        (df_pv_mstr["DatumEndgueltigeStilllegung"].isna() |
-                         (df_pv_mstr["DatumEndgueltigeStilllegung"] >=max_shutdown_date))].copy()
-df_pv_2022["Gemeindeschluessel"] = pd.to_numeric(df_pv_2022["Gemeindeschluessel"], errors="coerce")
-nan_rows = df_pv_2022[df_pv_2022["Gemeindeschluessel"].isna()]
-df_pv_2022 = df_pv_2022.dropna(subset=["Gemeindeschluessel"]).copy()
-df_pv_2022['AGS_Kreis'] = (df_pv_2022['Gemeindeschluessel'].astype(int) // 1000)
+df_wind_filt = df_wind_mstr[(df_wind_mstr["Inbetriebnahmedatum"] <= max_ibn_date) &
+                        (df_wind_mstr["DatumEndgueltigeStilllegung"].isna() |
+                         (df_wind_mstr["DatumEndgueltigeStilllegung"] >=max_shutdown_date))].copy()
+
+print("Installierte Gesamt-Bruttoleistung nach MStr gesamt:  ", df_wind_mstr['Bruttoleistung'].sum().round(), "[kW]")
+print("Installierte Gesamt-Bruttoleistung nach MStr 2022:  ", df_wind_filt['Bruttoleistung'].sum().round(), "[kW]")
+
+
+df_onshore = df_wind_filt[df_wind_filt["Lage"] != "Windkraft auf See"].copy()
+num_plants_ons_without_ags = df_onshore["Gemeindeschluessel"].isna().sum()
+if num_plants_ons_without_ags > 0:
+    print('Warning: ' + str(num_plants_ons_without_ags) + ' plants have no municipality code')
+else:
+    print('Municipality code for all onshore plants available')
+df_offshore = df_wind_filt[df_wind_filt["Lage"] == "Windkraft auf See"].copy()
+num_plants_offs_without_ags = df_offshore["Gemeindeschluessel"].isna().sum()
+num_plants_offs = len(df_offshore)
+if (num_plants_offs - num_plants_offs_without_ags) > 0:
+    print('Warning: Some Offshore plants have a municipality code. They will anyhow not be included in aggregation.')
+else:
+    print('Check as expected - no offshore wind plants have a municipality code')
+
+# Aggregation and merge
+df_onshore["Gemeindeschluessel"] = pd.to_numeric(df_onshore["Gemeindeschluessel"], errors="coerce")
+nan_rows = df_onshore[df_onshore["Gemeindeschluessel"].isna()]
+df_onshore = df_onshore.dropna(subset=["Gemeindeschluessel"]).copy()
+df_onshore['AGS_Kreis'] = (df_onshore['Gemeindeschluessel'].astype(int) // 1000)
 # changes due to changes in definition of ags
-df_pv_2022['AGS_Kreis'] = df_pv_2022['AGS_Kreis'].replace(3152, 3159)
-df_pv_2022['AGS_Kreis'] = df_pv_2022['AGS_Kreis'].replace(3156, 3159)
-df_pv_2022['AGS_Kreis'] = df_pv_2022['AGS_Kreis'].replace(16056, 16063)
-df_pv_2022_grouped = df_pv_2022.groupby("AGS_Kreis")[["Bruttoleistung", "Nettonennleistung"]].sum().reset_index()
+df_onshore['AGS_Kreis'] = df_onshore['AGS_Kreis'].replace(3152, 3159)
+df_onshore['AGS_Kreis'] = df_onshore['AGS_Kreis'].replace(16056, 16063)
+df_onshore_2022_grouped = df_onshore.groupby("AGS_Kreis")[["Bruttoleistung", "Nettonennleistung"]].sum().reset_index()
 
 gdf_nuts['AGS_int'] = gdf_nuts['ags'].astype(int)
 
-gdf_merged = gdf_nuts.merge(df_pv_2022_grouped, left_on='AGS_int', right_on='AGS_Kreis', how='outer')
+gdf_merged = gdf_nuts.merge(df_onshore_2022_grouped, left_on='AGS_int', right_on='AGS_Kreis', how='outer')
 missing_ags = gdf_merged[gdf_merged['ags'].isna()]
 missing_value_in_ags = gdf_merged[gdf_merged['Bruttoleistung'].isna()]
+print('In ' + str(len(missing_value_in_ags)) + ' nuts3 regions are no wind power plants installed')
 
-print("Anzahl installierter Anlagen nach Mstr:", len(df_pv_mstr))
-print("Anzahl installierter Anlagen nach Mstr 2022:", len(df_pv_2022))
-print("Installierte Gesamt-Bruttoleistung nach MStr:  ", df_pv_mstr['Bruttoleistung'].sum().round(), "[kW]")
-print("Installierte Gesamt-Bruttoleistung nach MStr 2022:  ", df_pv_2022['Bruttoleistung'].sum().round(), "[kW]")
-print("Installierte Gesamt-Bruttoleistung nach MStr 2022:  ", df_pv_2022_grouped['Bruttoleistung'].sum().round(), "[kW]")
-print("Installierte Gesamt-Bruttoleistung nach MStr 2022:  ", gdf_merged['Bruttoleistung'].sum().round(), "[kW]")
-# print("Gesamt-Bruttoertrag nach MStr:  ", df_mstr['Bruttoertrag'].sum().round(-4) / 10**6, "[GWh/a]")
+print("Installierte Gesamt-Bruttoleistung nach MStr ungefiltert gesamt:  ", df_wind_mstr['Bruttoleistung'].sum().round(), "[kW]")
+print("Installierte Gesamt-Bruttoleistung nach MStr 2022:  ", df_wind_filt['Bruttoleistung'].sum().round(), "[kW]")
+print("Installierte Gesamt-Bruttoleistung Onshore nach MStr 2022:  ", df_onshore['Bruttoleistung'].sum().round(), "[kW]")
+print("Installierte Gesamt-Bruttoleistung Offshore nach MStr 2022:  ", df_offshore['Bruttoleistung'].sum().round(), "[kW]")
+print("Installierte Gesamt-Bruttoleistung nach MStr 2022 nach Gruppierung:  ", df_onshore_2022_grouped['Bruttoleistung'].sum().round(), "[kW]")
+print("Installierte Gesamt-Bruttoleistung nach MStr 2022 nach merge:  ", gdf_merged['Bruttoleistung'].sum().round(), "[kW]")
 
 gdf_merged = gdf_merged.drop(columns=["AGS_int", "AGS_Kreis"])
 
-df_pv_final = pd.DataFrame(gdf_merged.drop(columns='geom'))
-df_pv_final.to_excel(path_result_file, index=False)
+df_wind_final = pd.DataFrame(gdf_merged.drop(columns='geom'))
+sum_offshore_brutto = df_offshore['Bruttoleistung'].sum()
+sum_offshore_netto = df_offshore['Nettonennleistung'].sum()
+row_id = df_wind_final['id'].max() + 1 if not df_wind_final.empty else 1
 
-filename = "pv_inst_cap_kw_2022_nuts3"
+# define offshore row
+row_offshore = {
+    'id': row_id,
+    'ags': None,
+    'gen': 'Offshore',
+    'bez': 'Offshore',
+    'nuts': None,
+    'Bruttoleistung': sum_offshore_brutto,
+    'Nettonennleistung': sum_offshore_netto
+}
+df_wind_final = pd.concat([df_wind_final, pd.DataFrame([row_offshore])], ignore_index=True)
+
+df_wind_final.to_excel(path_result_file, index=False)
+
+filename = "wind_inst_cap_onshore_kw_2022_nuts3"
 
 gdf_merged.to_postgis(name=filename, schema='proj_regioplan', con=GEODB_engine, if_exists='replace')
+
+#gdf_wind = gpd.GeoDataFrame(df_wind_filt, geometry=gpd.points_from_xy(df_wind_filt['Laengengrad'],
+#                                                                 df_wind_filt['Breitengrad'], crs="EPSG:4326"))
